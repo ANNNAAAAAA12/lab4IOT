@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lab 4 IoT · MQTT vs AMQP vs HTTP en Azure IoT</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#f6f7f9;--card:#fff;--tx:#1a1d23;--mu:#5d6675;--bd:#e1e5ea;--mqtt:#2a7de1;--amqp:#8a4fd6;--http:#e07b1a;--bad:#d03a3a;--ok:#1f9d63}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#12151a;--card:#1b1f27;--tx:#e8ebf0;--mu:#9aa4b2;--bd:#2c323d}}
+:root[data-theme="dark"]{--bg:#12151a;--card:#1b1f27;--tx:#e8ebf0;--mu:#9aa4b2;--bd:#2c323d}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.w{max-width:1100px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:1.5rem;margin:.2em 0}h2{font-size:1.2rem;margin:1.8em 0 .5em}h3{margin:.2em 0;font-size:1.05rem}
+p{margin:.4em 0}.mu{color:var(--mu)}.small{font-size:.85rem}
+.bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:12px 0}
+button{background:var(--card);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:7px 14px;font:inherit;cursor:pointer}
+button.p{background:var(--mqtt);color:#fff;border-color:var(--mqtt)}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(310px,1fr))}
+.c{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px}
+.hd{display:flex;justify-content:space-between;align-items:center;border-left:5px solid var(--col);padding-left:10px;margin-bottom:8px}
+.tag{font-size:.75rem;border:1px solid var(--bd);border-radius:20px;padding:1px 9px;color:var(--mu)}
+.v{display:grid;grid-template-columns:1fr auto;gap:2px 10px;padding:8px 0;border-top:1px solid var(--bd)}
+.big{font-size:1.6rem;font-weight:650}.big.al{color:var(--bad)}
+.st{grid-column:1/-1;font-size:.78rem;color:var(--mu)}
+svg.sp{grid-column:1/-1;width:100%;height:44px}
+.kp{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.kp div{flex:1;min-width:80px;background:var(--bg);border-radius:8px;padding:6px 8px;font-size:.78rem;color:var(--mu)}
+.kp b{display:block;color:var(--tx);font-size:1rem}
+pre{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:8px;font-size:.75rem;overflow-x:auto;margin:8px 0 0;white-space:pre-wrap;word-break:break-all}
+.tw{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:.88rem}
+th,td{border:1px solid var(--bd);padding:7px 9px;text-align:left;vertical-align:top}th{background:var(--card)}
+td:first-child{font-weight:600}
+.ex{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.log{max-height:200px;overflow:auto;font:12px/1.5 ui-monospace,Menlo,monospace}
+.log div{padding:1px 0;border-bottom:1px dashed var(--bd)}
+</style></head><body><div class="w">
+<h1>Laboratorio 4 · Protocolos IoT en Azure</h1>
+<p class="mu">MQTT vs AMQP vs HTTPS REST · Universidad Autónoma de Bucaramanga · Ana Ramos y Luis Bohórquez</p>
+<div class="c" style="margin-top:14px"><b>¿Qué estás viendo?</b>
+<p class="small mu">Este panel <b>simula en vivo</b> la telemetría que envían tus tres scripts (mismos rangos de valores y mismo envío periódico). Los datos no vienen directamente de Azure: sirve para explicar y comparar los protocolos. Cada tarjeta muestra el valor actual, mínimo / promedio / máximo, la tendencia y cuántos bytes ha costado la comunicación.</p></div>
+
+<div class="bar">
+<button class="p" id="bp">⏸ Pausar</button>
+<button id="br">↺ Reiniciar</button>
+<label class="small mu">Velocidad
+<select id="sp"><option value="10000">Real (10 s)</option><option value="2000" selected>Rápida (2 s)</option><option value="500">Muy rápida (0.5 s)</option></select></label>
+<span class="small mu" id="clk"></span>
+</div>
+
+<div class="grid" id="cards"></div>
+
+<h2>Totales comparados</h2>
+<div class="c"><div class="tw"><table id="tot"></table></div>
+<p class="small mu">Los bytes de cabecera son una estimación didáctica (MQTT ≈ 2 B, AMQP ≈ 8 B, HTTP ≈ 250 B por mensaje). El handshake TLS de HTTP se repite en cada petición porque no mantiene conexión.</p></div>
+
+<h2>Registro de mensajes</h2>
+<div class="c"><div class="log" id="log"></div></div>
+
+<h2>¿Qué es cada cosa y para qué sirve?</h2>
+<div class="ex">
+<div class="c" style="border-top:4px solid var(--mqtt)"><h3>MQTT · puerto 8883</h3><p class="small">Protocolo de <b>publicación/suscripción</b> muy ligero. El dispositivo mantiene un socket abierto (KeepAlive) y publica en el tópico <code>devices/&lt;id&gt;/messages/events/</code>. Con <code>qos=1</code> espera confirmación (PUBACK) del hub.</p><p class="small"><b>Para qué:</b> sensores a batería, ESP32/ESP8266, redes celulares con cobro por datos.</p></div>
+<div class="c" style="border-top:4px solid var(--amqp)"><h3>AMQP · puerto 5671</h3><p class="small">Estándar empresarial (ISO/IEC 19464). Permite <b>multiplexar</b> varias sesiones (telemetría, comandos C2D, Device Twin) sobre una sola conexión, con liquidación de mensajes (at-least-once / exactly-once). Tu script usa el SDK de Azure, que habla AMQP/TLS.</p><p class="small"><b>Para qué:</b> gateways industriales, aplicaciones críticas, flujos bidireccionales masivos.</p></div>
+<div class="c" style="border-top:4px solid var(--http)"><h3>HTTPS REST · puerto 443</h3><p class="small">Modelo <b>petición/respuesta sin estado</b>: cada medición es un <code>POST</code> a <code>/devices/&lt;id&gt;/messages/events</code> con un <b>token SAS</b> (HMAC-SHA256 con la clave del dispositivo + expiración) en la cabecera. Un <code>204</code> indica éxito.</p><p class="small"><b>Para qué:</b> dispositivos que despiertan rara vez, sistemas legacy, redes que solo dejan salir por 443.</p></div>
+<div class="c"><h3>DPS (Device Provisioning Service)</h3><p class="small">Los tres scripts empiezan registrándose en DPS con <code>SCOPE_ID</code>, <code>DEVICE_ID</code> y clave simétrica. DPS responde con el <b>IoT Hub asignado</b> al que luego se conecta cada protocolo. Evita codificar el hostname a mano.</p></div>
+<div class="c"><h3>Variables de telemetría</h3><p class="small"><b>Temperatura (°C)</b>: alerta &gt; 26 °C. <b>Humedad (%)</b>: alerta &gt; 60 %. <b>Voltaje (V)</b>: nivel de batería/alimentación del nodo (~3.1–3.3 V); alerta &lt; 3.15 V. Los valores en rojo superan su umbral.</p></div>
+<div class="c"><h3>Por qué importan las diferencias</h3><p class="small">El mismo dato (~60 bytes) cuesta muy distinto: MQTT casi no añade cabecera, AMQP poco, y HTTP más de 200 bytes más un handshake TLS cada vez. Eso se traduce en ancho de banda y energía: por eso MQTT gana en batería y HTTP solo conviene con envíos muy espaciados.</p></div>
+</div>
+
+<h2>Tabla comparativa</h2>
+<div class="c"><div class="tw"><table>
+<tr><th>Criterio</th><th>MQTT</th><th>AMQP</th><th>HTTP/HTTPS REST</th></tr>
+<tr><td>Puerto</td><td>8883 (TLS)</td><td>5671 (TLS)</td><td>443 (TLS)</td></tr>
+<tr><td>Modelo</td><td>Pub/Sub</td><td>Mensajería / multiplexación</td><td>Petición/respuesta (stateless)</td></tr>
+<tr><td>Overhead</td><td>Muy bajo (~2 B)</td><td>Bajo/moderado (~8 B)</td><td>Alto (&gt;200 B)</td></tr>
+<tr><td>Ancho de banda</td><td>Mínimo</td><td>Moderado</td><td>Elevado por solicitud</td></tr>
+<tr><td>Energía</td><td>Muy bajo</td><td>Moderado</td><td>Alto (handshake recurrente)</td></tr>
+<tr><td>Conexión</td><td>Socket persistente</td><td>Persistente multiplexado</td><td>Sin estado</td></tr>
+<tr><td>Complejidad</td><td>Baja</td><td>Alta (SDK)</td><td>Muy baja</td></tr>
+</table></div></div>
+
+<h2>Cuándo elegir cada uno</h2>
+<div class="c"><p class="small"><b>MQTT:</b> nodos de bajo consumo, microcontroladores con poca RAM/Flash, redes móviles con tarifa por volumen.<br>
+<b>AMQP:</b> pasarelas industriales, almacenamiento intermedio, misión crítica con colas y alta fiabilidad.<br>
+<b>HTTP/HTTPS:</b> envíos muy esporádicos (p. ej. un reporte diario), sistemas legacy, entornos restringidos a tráfico web 443.</p></div>
+</div>
+<script>
+const P=[
+ {k:'mqtt',n:'MQTT',dev:'26a1012qbj0',col:'var(--mqtt)',port:8883,hdr:2,tls:0,tag:'Pub/Sub · qos=1',r:{t:[20,26],h:[50,65],v:[3.1,3.3]}},
+ {k:'amqp',n:'AMQP',dev:'dev-amqp-01',col:'var(--amqp)',port:5671,hdr:8,tls:0,tag:'SDK Azure · multiplexado',r:{t:[21,27],h:[48,62],v:[3.1,3.3]}},
+ {k:'http',n:'HTTPS REST',dev:'dev-http-01',col:'var(--http)',port:443,hdr:250,tls:1,tag:'POST + SAS · stateless',r:{t:[22,25],h:[50,58],v:[3.2,3.3]}}];
+const V=[{id:'t',n:'Temperatura',u:'°C',d:1,al:x=>x>26,lim:'> 26 °C'},{id:'h',n:'Humedad',u:'%',d:1,al:x=>x>60,lim:'> 60 %'},{id:'v',n:'Voltaje',u:'V',d:2,al:x=>x<3.15,lim:'< 3.15 V'}];
+const N=30;let S,paused=false,timer;
+const rnd=(a,b,d)=>+(a+Math.random()*(b-a)).toFixed(d);
+function init(){S={};P.forEach(p=>S[p.k]={n:0,bytes:0,hs:0,al:0,t:[],h:[],v:[],last:''});
+ document.getElementById('log').innerHTML='';render();}
+function tick(){
+ P.forEach(p=>{const s=S[p.k],o={temperatura:rnd(...p.r.t,1),humedad:rnd(...p.r.h,1),voltaje:rnd(...p.r.v,2)};
+  s.t.push(o.temperatura);s.h.push(o.humedad);s.v.push(o.voltaje);
+  [s.t,s.h,s.v].forEach(a=>{if(a.length>N)a.shift()});
+  const pl=JSON.stringify(o);s.last=pl;s.n++;
+  s.bytes+=pl.length+p.hdr+(p.tls?4000:0);s.hs+=p.tls;
+  if(V[0].al(o.temperatura)||V[1].al(o.humedad)||V[2].al(o.voltaje))s.al++;
+  const L=document.getElementById('log'),e=document.createElement('div');
+  e.style.color=p.col;e.textContent=new Date().toLocaleTimeString()+' ['+p.n+' · '+p.dev+'] '+(p.k==='http'?'Status 204 | ':'')+pl;
+  L.prepend(e);while(L.children.length>40)L.lastChild.remove();});
+ render();}
+function spark(a,c){if(a.length<2)return'';const mn=Math.min(...a),mx=Math.max(...a),r=mx-mn||1;
+ const pts=a.map((x,i)=>(i/(N-1)*300).toFixed(1)+','+(40-(x-mn)/r*36).toFixed(1)).join(' ');
+ return `<svg class="sp" viewBox="0 0 300 44" preserveAspectRatio="none"><polyline fill="none" stroke="${c}" stroke-width="2" points="${pts}"/></svg>`;}
+function render(){
+ document.getElementById('cards').innerHTML=P.map(p=>{const s=S[p.k];
+  const rows=V.map(v=>{const a=s[v.id],x=a[a.length-1];
+   if(x===undefined)return`<div class="v"><span>${v.n}</span><span class="big">—</span></div>`;
+   const avg=a.reduce((q,w)=>q+w,0)/a.length;
+   return`<div class="v"><span>${v.n} <span class="small mu">(alerta ${v.lim})</span></span><span class="big ${v.al(x)?'al':''}">${x.toFixed(v.d)} ${v.u}</span>
+   <span class="st">min ${Math.min(...a).toFixed(v.d)} · prom ${avg.toFixed(v.d)} · máx ${Math.max(...a).toFixed(v.d)}</span>${spark(a,p.col)}</div>`}).join('');
+  return`<div class="c" style="--col:${p.col}"><div class="hd"><div><h3>${p.n}</h3><span class="small mu">${p.dev} · puerto ${p.port}</span></div><span class="tag">${p.tag}</span></div>${rows}
+  <div class="kp"><div>Mensajes<b>${s.n}</b></div><div>Bytes totales<b>${(s.bytes/1024).toFixed(1)} KB</b></div><div>Alertas<b>${s.al}</b></div><div>Handshakes TLS<b>${p.tls?s.hs:'1'}</b></div></div>
+  <pre>${s.last||'esperando primer mensaje…'}</pre></div>`}).join('');
+ document.getElementById('tot').innerHTML='<tr><th>Protocolo</th><th>Mensajes</th><th>Bytes totales</th><th>Bytes/mensaje</th><th>Alertas</th></tr>'+
+  P.map(p=>{const s=S[p.k];return`<tr><td style="color:${p.col}">${p.n}</td><td>${s.n}</td><td>${s.bytes.toLocaleString()}</td><td>${s.n?Math.round(s.bytes/s.n):'—'}</td><td>${s.al}</td></tr>`}).join('');
+}
+function start(){clearInterval(timer);timer=setInterval(()=>{if(!paused)tick()},+document.getElementById('sp').value);}
+document.getElementById('bp').onclick=e=>{paused=!paused;e.target.textContent=paused?'▶ Reanudar':'⏸ Pausar';};
+document.getElementById('br').onclick=init;
+document.getElementById('sp').onchange=start;
+setInterval(()=>document.getElementById('clk').textContent=new Date().toLocaleString(),1000);
+init();tick();start();
+</script></body></html>
